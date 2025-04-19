@@ -1,0 +1,266 @@
+---------------------------------------------------------
+---------------------gold layer-------------------------- 
+---------------------------------------------------------
+
+--conceptual data 
+--relationship between the tables gives big picture
+
+-- logical data model
+-- primary key
+
+--physical data model
+
+
+--star schema 
+--facts -> Dimension
+
+--snowflake schema
+-- facts -> Dimension -> Dimension
+-- more complex
+
+--dimension table
+-- descriptive infomration that give context to your data - who? what? where?
+
+
+-- facts table
+-- quantitative information that represents events - how much? how many?
+
+
+
+-------------------------------------------------------------
+---------------------logical data model----------------------
+---------------------star schema-----------------------------
+-------------------------------------------------------------
+
+--doing the joins and checking if there are primary key duplicates by doing a group by in a subquery
+-- checking cst_id (primary) count that is greater than 1. group by and doing a having count(*)
+
+select cst_id, count(*) from 
+(
+SELECT 
+	ci.cst_id, 
+	ci.cst_key,
+	ci.cst_firstname,
+	ci.cst_lastname,
+	ci.cst_marital_status,
+	ci.cst_gndr,
+	ci.cst_create_date,
+	ca.bdate,
+	ca.GEN,
+	la.CNTRY
+FROM silver.crm_cust_info as ci
+left join silver.erp_cust_az12 as ca
+on  ci.cst_key = ca.CID
+left join silver.erp_loc_a101 as la
+on ci.cst_key = la.CID
+)t group by cst_id
+having count(*) > 1
+
+
+SELECT 
+	ci.cst_id, 
+	ci.cst_key,
+	ci.cst_firstname,
+	ci.cst_lastname,
+	ci.cst_marital_status,
+	ci.cst_gndr,
+	ci.cst_create_date,
+	ca.bdate,
+	ca.GEN,
+	la.CNTRY
+FROM silver.crm_cust_info as ci
+left join silver.erp_cust_az12 as ca
+on  ci.cst_key = ca.CID
+left join silver.erp_loc_a101 as la
+on ci.cst_key = la.CID
+
+--doing *data intergation* by looking at columns with the same data outcome
+--ask the product owner. example, crm is the correct data source. 
+
+SELECT distinct
+	ci.cst_gndr,
+	ca.GEN,
+	CASE WHEN ci.cst_gndr <> 'n/a' THEN ci.cst_gndr -- CRM is the master for gender info
+		ELSE COALESCE(ca.GEN, 'n/a')
+	END AS new_gen
+FROM silver.crm_cust_info as ci
+left join silver.erp_cust_az12 as ca
+on  ci.cst_key = ca.CID
+left join silver.erp_loc_a101 as la
+on ci.cst_key = la.CID
+order by 1,2;
+
+--new updated table with friendly names by following the rules
+
+SELECT 
+	ci.cst_id AS customer_id,
+	ci.cst_key AS customer_number,
+	ci.cst_firstname AS first_name,
+	ci.cst_lastname AS last_name,
+	la.CNTRY AS country,
+	ci.cst_marital_status as marital_status, 
+	CASE WHEN ci.cst_gndr <> 'n/a' THEN ci.cst_gndr -- CRM is the master for gender info
+		ELSE COALESCE(ca.GEN, 'n/a')
+	END AS gender,
+	ca.bdate AS birthdate,
+	ci.cst_create_date AS create_date
+FROM silver.crm_cust_info as ci
+left join silver.erp_cust_az12 as ca
+on  ci.cst_key = ca.CID
+left join silver.erp_loc_a101 as la
+on ci.cst_key = la.CID;
+
+--creating a primary key/surrogate key for each row and creating an object BY (Create View gold.dim_customers AS)
+
+CREATE VIEW gold.dim_customers AS
+SELECT 
+	ROW_NUMBER() over (order by ci.cst_id) as customer_key,
+	ci.cst_id AS customer_id,
+	ci.cst_key AS customer_number,
+	ci.cst_firstname AS first_name,
+	ci.cst_lastname AS last_name,
+	la.CNTRY AS country,
+	ci.cst_marital_status as marital_status, 
+	CASE WHEN ci.cst_gndr <> 'n/a' THEN ci.cst_gndr -- CRM is the master for gender info
+		ELSE COALESCE(ca.GEN, 'n/a')
+	END AS gender,
+	ca.bdate AS birthdate,
+	ci.cst_create_date AS create_date
+FROM silver.crm_cust_info as ci
+left join silver.erp_cust_az12 as ca
+on  ci.cst_key = ca.CID
+left join silver.erp_loc_a101 as la
+on ci.cst_key = la.CID;
+
+--checking the quality of the new table
+select distinct(gender) from gold.dim_customers;
+
+
+--------------------now creating the product table ---------------------------
+------exlcuding historical data--------
+select 
+	pd.prd_id,
+	pd.cat_id,
+	pd.prd_key,
+	pd.prd_nm,
+	pd.prd_cost,
+	pd.prd_line,
+	pd.prd_start_dt,
+	d.CAT,
+	d.subcat,
+	d.MAINTENANCE
+from silver.crm_prd_info as pd
+left join silver.erp_px_cat_g1v2 as d
+on pd.cat_id = d.id
+where pd.prd_end_dt is null -- filter historical data
+
+--checking unique key for a primary key and results shows no duplicates
+select prd_key, count(*)
+from 
+(
+select 
+	pd.prd_id,
+	pd.cat_id,
+	pd.prd_key,
+	pd.prd_nm,
+	pd.prd_cost,
+	pd.prd_line,
+	pd.prd_start_dt,
+	d.CAT,
+	d.subcat,
+	d.MAINTENANCE
+from silver.crm_prd_info as pd
+left join silver.erp_px_cat_g1v2 as d
+on pd.cat_id = d.id
+where pd.prd_end_dt is null -- filter historical data
+) t
+group by prd_key
+having count(*) > 1;
+
+---group by relevant infomration and friendly names
+-- this is a dimension table and creating a surrogate key
+select 
+	ROW_NUMBER() over(order by pd.prd_start_dt, pd.prd_key) as product_key, 
+	pd.prd_id as product_id,
+	pd.prd_key as product_number,
+	pd.prd_nm as product_name,
+	pd.cat_id as category_id,
+	d.CAT as category,
+	d.subcat as subcategory,
+	d.MAINTENANCE,
+	pd.prd_cost as cost,
+	pd.prd_line as product_line,
+	pd.prd_start_dt as start_date
+from silver.crm_prd_info as pd
+left join silver.erp_px_cat_g1v2 as d
+on pd.cat_id = d.id
+where pd.prd_end_dt is null -- filter historical data;
+
+----now creating a view
+CREATE VIEW gold.dim_products as
+select 
+	ROW_NUMBER() over(order by pd.prd_start_dt, pd.prd_key) as product_key, 
+	pd.prd_id as product_id,
+	pd.prd_key as product_number,
+	pd.prd_nm as product_name,
+	pd.cat_id as category_id,
+	d.CAT as category,
+	d.subcat as subcategory,
+	d.MAINTENANCE,
+	pd.prd_cost as cost,
+	pd.prd_line as product_line,
+	pd.prd_start_dt as start_date
+from silver.crm_prd_info as pd
+left join silver.erp_px_cat_g1v2 as d
+on pd.cat_id = d.id
+where pd.prd_end_dt is null -- filter historical data;
+
+select * from gold.dim_products;
+
+------------------------------------------------------------------------
+--------------create fact sales--------------
+---putting the surrogate key to the facts table.
+select 
+	sd.sls_ord_num AS order_number,
+	pr.product_key,
+	cu.customer_key,
+	sls_order_dt AS order_date,
+	sls_ship_dt AS shipping_date,
+	sls_due_dt AS due_date,
+	sls_sales AS sales_amount,
+	sls_quantity AS quantity,
+	sls_price AS price
+from silver.crm_sales_details as sd
+left join gold.dim_products as pr
+on sd.sls_prd_key = pr.product_number
+left join gold.dim_customers as cu
+on sd.sls_cust_id = cu.customer_id;
+
+-----CREATING A VIEW------
+create view gold.fact_sales as
+select 
+	sd.sls_ord_num AS order_number,
+	pr.product_key,
+	cu.customer_key,
+	sls_order_dt AS order_date,
+	sls_ship_dt AS shipping_date,
+	sls_due_dt AS due_date,
+	sls_sales AS sales_amount,
+	sls_quantity AS quantity,
+	sls_price AS price
+from silver.crm_sales_details as sd
+left join gold.dim_products as pr
+on sd.sls_prd_key = pr.product_number
+left join gold.dim_customers as cu
+on sd.sls_cust_id = cu.customer_id;
+
+--checking the quality of view 
+-- foreign key integrity (dimensions)
+select *
+from gold.fact_sales f
+left join gold.dim_customers c
+on c.customer_key = f.customer_key
+left join gold.dim_products as p
+on p.product_key = f.product_key
+where c.customer_key is null;
+
