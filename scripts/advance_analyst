@@ -1,0 +1,256 @@
+-------------------------Advance Data Analytics---------------------------
+--Change over time, trends
+
+--aggregate measure by date dimension
+--total sales by year
+--average cost by month
+
+-----------------------------Q1 Analyse Sale performance over time.---------------------------
+
+
+--year
+select
+year(order_date) as order_year,
+sum(sales_amount) as total_sales,
+count(distinct customer_key) as total_customers,
+sum(quantity) as total_quantity
+from gold.fact_sales
+where order_date is not null
+group by year(order_date)
+order by year(order_date);
+
+--year & month
+select
+year(order_date) as order_year,
+month(order_date) as order_month,
+sum(sales_amount) as total_sales,
+count(distinct customer_key) as total_customers,
+sum(quantity) as total_quantity
+from gold.fact_sales
+where order_date is not null
+group by year(order_date), month(order_date)
+order by year(order_date), month(order_date);
+
+
+--datetrunc this is not recongnised in my sql server
+select
+DATETRUNC(month, order_date) as order_date,
+sum(sales_amount) as total_sales,
+count(distinct customer_key) as total_customers,
+sum(quantity) as total_quantity
+from gold.fact_sales
+where order_date is not null
+group by DATETRUNC(month, order_date)
+order by DATETRUNC(month, order_date);
+
+
+---------------------------q2 cumulative analysis---------------------------
+-- aggregate the data progressively over time to understand how th ebusiness is growing over the time 
+-- see if it is growing or declining 
+-- cumulative measure by date dimension which is adding stuff on top of each other
+-- running total sale by year
+-- moving average of by month 
+
+--q calculate the total sales per month and the running total of sales over time
+select
+order_year,
+order_month,
+total_sales,
+sum(total_sales) over(partition by order_year order by order_year, order_month asc) as running_total_sales --this is cumulative + partition by the order year to see the different years 
+from
+(
+select 
+	year(order_date) as order_year,
+	month(order_date) as order_month,
+	sum(sales_amount) as total_sales
+from gold.fact_sales
+where order_date is not null
+group by year(order_date), month(order_date)
+) t
+
+--finding the moving average
+select
+order_year,
+order_month,
+total_sales,
+avg_price,
+sum(total_sales) over(partition by order_year order by order_year, order_month asc) as running_total_sales, --this is cumulative + partition by the order year to see the different years 
+avg(avg_price) over(partition by order_year order by order_year, order_month asc) as average_price --find the moving average
+from
+(
+select 
+	year(order_date) as order_year,
+	month(order_date) as order_month,
+	sum(sales_amount) as total_sales,
+	avg(price) as avg_price
+from gold.fact_sales
+where order_date is not null
+group by year(order_date), month(order_date)
+) t
+
+--have to use cumulative aggration to check how the business is tracking how many FTE are there on a month to month basis. 
+
+
+--performance analysis
+--comparing the current value to a target value to help measure sucess and compare performance
+
+--current measure - target measure
+--current sales - average sales
+--current year sales - previous year sales
+--current sale - lower sales
+
+--q3 analyst the yearly performance of products by comparing each product's sales to both its average sales performance and the previous year's sales.
+
+with yearly_product_sales as (
+select 
+year(f.order_date) as order_year,
+p.product_name,
+sum(f.sales_amount) as current_sales
+from gold.fact_sales as f
+left join gold.dim_products as p
+on f.product_key = p.product_key
+where year(f.order_date) is not null 
+group by year(f.order_date), p.product_name
+) 
+select 
+order_year,
+product_name,
+current_sales,
+avg(current_sales) over(partition by product_name) as average_sales,
+current_sales - avg(current_sales) over(partition by product_name)  as diff_average,
+	CASE 
+		WHEN current_sales - avg(current_sales) over(partition by product_name) > 0 THEN 'above the average'
+		WHEN current_sales - avg(current_sales) over(partition by product_name) < 0 THEN 'below the average'
+		ELSE 'average'
+		end as average_change,
+LAG(current_sales, 1) over(partition by product_name order by order_year) as previous_year_sales,
+current_sales - LAG(current_sales, 1) over(partition by product_name order by order_year) as diff_previous_year_sales,
+	CASE 
+		WHEN current_sales - LAG(current_sales, 1) over(partition by product_name order by order_year) > 0 THEN 'Increase'
+		WHEN current_sales - LAG(current_sales, 1) over(partition by product_name order by order_year) < 0 THEN 'Decrease'
+		ELSE 'no change'
+		end as previous_year
+from yearly_product_sales 
+order by product_name, order_year;
+
+
+-----------------------------part to whole analysis------------------------------------
+--analyse how an individual part is performing compare to the overall, allowing us to understand which category has the 
+--greaest impace on the business
+
+--check one of the measures / total measuere * 100 by dimension
+--sales/total sales * 100 by category
+--quantity/total quantity * 100 by country 
+
+--Q4 which categories contribute the most to overall sales
+
+WITH category_sale AS(
+select
+category,
+sum(sales_amount) as total_sales
+from gold.fact_sales f
+left join gold.dim_products p
+on p.product_key = f.product_key
+group by category
+)
+Select
+category, 
+total_sales,
+sum(total_sales) over() as overall_sales, ---over() don't want to define anything as we don't want to partition the data, introduction new new dimision 
+CONCAT(ROUND((CAST (total_sales AS float)/ sum(total_sales) over() )*100, 2), '%') as percentrage_of_total
+from category_sale
+order by total_sales desc;
+
+
+
+---------------------------Q5 Data Segmentation--------------------------------
+--group the data base on specific rang, 
+--help understand the correlation between two measures
+--measure by measure 
+--total prduct by sale ranges
+--total customer by age group
+-----case when statement-------
+
+--segment product into cost ranges and count how many products fall into each segment
+select 
+product_key,
+product_name, 
+cost,
+CASE -- case statement to convert a measure into a dimension 
+	WHEN cost < 100 THEN 'Below 100'
+	WHEN cost Between 100 and 500 then '100-500'
+	WHEN cost between 500 and 1000 then '500-1000'
+	ELSE 'above 1000'
+END cost_range
+from gold.dim_products
+
+--now to aggregate the data into a new dimension 
+
+WITH product_segments as 
+(
+select 
+product_key,
+product_name, 
+cost,
+CASE -- case statement to convert a measure into a dimension 
+	WHEN cost < 100 THEN 'Below 100'
+	WHEN cost Between 100 and 500 then '100-500'
+	WHEN cost between 500 and 1000 then '500-1000'
+	ELSE 'above 1000'
+END cost_range
+from gold.dim_products
+)
+select 
+cost_range,
+count(product_key) as total_products
+from product_segments
+group by cost_range
+order by total_products desc
+
+--if your dimension are not powerful enough to create insights then take one measure to dimension with case when and aggreate the data.
+
+/*group customers into three segments base on their spending behavior
+	-vip: customer with at least 12 month of history and spending more than $5000
+	-regular: customer with at least 12 months of history but spending $5000 or less
+	-new: customer with a lifespan less than 12 months.
+and find the total number of cusotmer by each group?*/
+
+select * from gold.dim_customers;
+select * from gold.dim_products;
+select * from gold.fact_sales;
+
+WITH customer_spending AS (
+select
+c.customer_key, 
+sum(f.sales_amount) as total_spending,
+MIN(order_date) as first_order,
+MAX(order_date) as last_order,
+DATEDIFF(month, MIN(order_date), MAX(order_date)) as lifespan
+from gold.fact_sales AS f
+left join gold.dim_customers as c
+on f.customer_key = c.customer_key
+group by c.customer_key
+)
+select
+customer_segment, 
+count(customer_key) as count_of_customer
+from (
+	SELECT 
+	customer_key, 
+	CASE 
+		WHEN lifespan >= 12 AND total_spending > 5000 then 'VIP'
+		WHEN lifespan >= 12 AND total_spending <= 5000 then 'Regular'
+		ELSE 'New'
+	END as customer_segment
+	from customer_spending
+) t
+group by customer_segment
+
+--converting measure to dimension than dimension to measure.
+
+
+----------------q6 advance analytics project buld customer report-----------------------
+
+
+
+
